@@ -1,6 +1,6 @@
 
-import React, { useState, useEffect, useCallback } from 'react';
-import { HashRouter, Routes, Route, Navigate, useLocation, Link, useNavigate } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { HashRouter, Routes, Route, Navigate, useLocation, Link } from 'react-router-dom';
 import { 
   LayoutDashboard, 
   CreditCard, 
@@ -9,22 +9,17 @@ import {
   LogOut, 
   Menu, 
   X, 
-  Bell,
-  Trash2,
-  Edit2,
-  ArrowRight,
-  ChevronRight,
-  Settings,
-  ShieldCheck,
-  TrendingDown
+  Bell
 } from 'lucide-react';
-import { User, Subscription, AppState } from './types';
-import Login from './components/Login';
-import Dashboard from './components/Dashboard';
-import SubscriptionForm from './components/SubscriptionForm';
-import SubscriptionList from './components/SubscriptionList';
-import Reports from './components/Reports';
-import { FREE_LIMIT } from './constants';
+import { User, Subscription, AppState } from './types.ts';
+import Login from './components/Login.tsx';
+import Dashboard from './components/Dashboard.tsx';
+import SubscriptionForm from './components/SubscriptionForm.tsx';
+import SubscriptionList from './components/SubscriptionList.tsx';
+import Reports from './components/Reports.tsx';
+import { FREE_LIMIT } from './constants.ts';
+import { authService } from './services/authService.ts';
+import { subscriptionService } from './services/subscriptionService.ts';
 
 const App: React.FC = () => {
   const [state, setState] = useState<AppState>({
@@ -34,77 +29,86 @@ const App: React.FC = () => {
   });
 
   useEffect(() => {
-    const storedUser = localStorage.getItem('assina_user');
-    const storedSubs = localStorage.getItem('assina_subs');
-    
-    if (storedUser) {
-      setState(prev => ({
-        ...prev,
-        user: JSON.parse(storedUser),
-        subscriptions: storedSubs ? JSON.parse(storedSubs) : [],
-        loading: false
-      }));
-    } else {
-      setState(prev => ({ ...prev, loading: false }));
-    }
+    const initApp = async () => {
+      try {
+        const user = authService.getCurrentUser();
+        if (user) {
+          const subscriptions = await subscriptionService.getAll(user.id);
+          setState({ user, subscriptions, loading: false });
+        } else {
+          setState(prev => ({ ...prev, loading: false }));
+        }
+      } catch (error) {
+        console.error("Erro ao inicializar app:", error);
+        setState(prev => ({ ...prev, loading: false }));
+      }
+    };
+    initApp();
   }, []);
 
-  const handleLogin = (user: User) => {
-    localStorage.setItem('assina_user', JSON.stringify(user));
-    setState(prev => ({ ...prev, user }));
+  const handleLogin = async (user: User) => {
+    setState(prev => ({ ...prev, loading: true }));
+    try {
+      const subscriptions = await subscriptionService.getAll(user.id);
+      setState({ user, subscriptions, loading: false });
+    } catch (error) {
+      console.error("Erro ao carregar assinaturas:", error);
+      setState({ user, subscriptions: [], loading: false });
+    }
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('assina_user');
-    setState(prev => ({ ...prev, user: null }));
+    authService.logout();
+    setState({ user: null, subscriptions: [], loading: false });
   };
 
-  const addSubscription = (sub: Omit<Subscription, 'id' | 'user_id' | 'created_at'>) => {
+  const addSubscription = async (subData: Omit<Subscription, 'id' | 'user_id' | 'created_at'>) => {
     if (!state.user) return;
     
     if (state.user.plano === 'free' && state.subscriptions.length >= FREE_LIMIT) {
-      alert(`O plano Gratuito permite apenas ${FREE_LIMIT} assinaturas. Considere o Plano Premium!`);
+      alert(`O plano Gratuito permite apenas ${FREE_LIMIT} assinaturas.`);
       return;
     }
 
-    const newSub: Subscription = {
-      ...sub,
-      id: Math.random().toString(36).substr(2, 9),
-      user_id: state.user.id,
-      created_at: new Date().toISOString()
-    };
-
-    const updated = [...state.subscriptions, newSub];
-    localStorage.setItem('assina_subs', JSON.stringify(updated));
-    setState(prev => ({ ...prev, subscriptions: updated }));
+    try {
+      const newSub = await subscriptionService.save(state.user.id, subData);
+      setState(prev => ({ ...prev, subscriptions: [...prev.subscriptions, newSub] }));
+    } catch (error) {
+      alert('Erro ao salvar assinatura.');
+    }
   };
 
-  const deleteSubscription = (id: string) => {
-    const updated = state.subscriptions.filter(s => s.id !== id);
-    localStorage.setItem('assina_subs', JSON.stringify(updated));
-    setState(prev => ({ ...prev, subscriptions: updated }));
-  };
-
-  const updateSubscription = (id: string, updatedData: Partial<Subscription>) => {
-    const updated = state.subscriptions.map(s => s.id === id ? { ...s, ...updatedData } : s);
-    localStorage.setItem('assina_subs', JSON.stringify(updated));
-    setState(prev => ({ ...prev, subscriptions: updated }));
+  const deleteSubscription = async (id: string) => {
+    try {
+      await subscriptionService.delete(id);
+      setState(prev => ({ ...prev, subscriptions: prev.subscriptions.filter(s => s.id !== id) }));
+    } catch (error) {
+      alert('Erro ao excluir assinatura.');
+    }
   };
 
   const upgradePlan = () => {
     if (!state.user) return;
     const upgradedUser: User = { ...state.user, plano: 'premium' };
-    localStorage.setItem('assina_user', JSON.stringify(upgradedUser));
+    const users = authService.getUsers();
+    const updatedUsers = users.map(u => u.id === state.user?.id ? upgradedUser : u);
+    localStorage.setItem('assinacontrol_users_db', JSON.stringify(updatedUsers));
+    localStorage.setItem('assinacontrol_session', JSON.stringify(upgradedUser));
     setState(prev => ({ ...prev, user: upgradedUser }));
   };
 
   if (state.loading) {
-    return <div className="h-screen w-full flex items-center justify-center bg-financial-dark text-emerald-400">Carregando...</div>;
+    return (
+      <div className="h-screen w-full flex flex-col items-center justify-center bg-financial-dark">
+        <div className="w-12 h-12 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+        <p className="text-emerald-400 font-medium">Sincronizando dados...</p>
+      </div>
+    );
   }
 
   return (
     <HashRouter>
-      <div className="min-h-screen bg-financial-dark flex">
+      <div className="min-h-screen bg-financial-dark flex text-slate-100">
         {state.user ? (
           <>
             <Sidebar handleLogout={handleLogout} plan={state.user.plano} />
@@ -122,10 +126,12 @@ const App: React.FC = () => {
             </main>
           </>
         ) : (
-          <Routes>
-            <Route path="/login" element={<Login onLogin={handleLogin} />} />
-            <Route path="*" element={<Navigate to="/login" />} />
-          </Routes>
+          <div className="w-full">
+            <Routes>
+              <Route path="/login" element={<Login onLogin={handleLogin} />} />
+              <Route path="*" element={<Navigate to="/login" />} />
+            </Routes>
+          </div>
         )}
       </div>
     </HashRouter>
@@ -135,7 +141,6 @@ const App: React.FC = () => {
 const Sidebar: React.FC<{ handleLogout: () => void, plan: string }> = ({ handleLogout, plan }) => {
   const [isOpen, setIsOpen] = useState(false);
   const location = useLocation();
-
   const links = [
     { name: 'Dashboard', path: '/', icon: LayoutDashboard },
     { name: 'Assinaturas', path: '/assinaturas', icon: CreditCard },
@@ -145,60 +150,25 @@ const Sidebar: React.FC<{ handleLogout: () => void, plan: string }> = ({ handleL
 
   return (
     <>
-      <button 
-        onClick={() => setIsOpen(!isOpen)} 
-        className="md:hidden fixed top-4 left-4 z-50 p-2 bg-financial-card rounded-lg border border-slate-700 shadow-xl"
-      >
+      <button onClick={() => setIsOpen(!isOpen)} className="md:hidden fixed top-4 left-4 z-50 p-2 bg-slate-800 rounded-lg border border-slate-700">
         {isOpen ? <X size={24} /> : <Menu size={24} />}
       </button>
-
-      <aside className={`
-        fixed inset-y-0 left-0 z-40 w-64 bg-financial-card border-r border-slate-800 transition-transform duration-300 ease-in-out
-        ${isOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0
-      `}>
+      <aside className={`fixed inset-y-0 left-0 z-40 w-64 bg-slate-900 border-r border-slate-800 transition-transform ${isOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0`}>
         <div className="h-full flex flex-col p-6">
           <div className="flex items-center gap-2 mb-10 px-2">
-            <div className="bg-financial-green p-2 rounded-xl">
-              <CreditCard className="text-financial-dark" size={24} />
-            </div>
-            <h1 className="text-xl font-bold tracking-tight">AssinaControl</h1>
+            <div className="bg-emerald-500 p-2 rounded-xl"><CreditCard className="text-slate-900" size={24} /></div>
+            <h1 className="text-xl font-bold">AssinaControl</h1>
           </div>
-
           <nav className="flex-1 space-y-2">
             {links.map(link => (
-              <Link
-                key={link.path}
-                to={link.path}
-                onClick={() => setIsOpen(false)}
-                className={`
-                  flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200
-                  ${location.pathname === link.path 
-                    ? 'bg-financial-green/10 text-financial-green font-medium' 
-                    : 'text-slate-400 hover:bg-slate-800 hover:text-white'}
-                `}
-              >
-                <link.icon size={20} />
-                {link.name}
+              <Link key={link.path} to={link.path} onClick={() => setIsOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${location.pathname === link.path ? 'bg-emerald-500/10 text-emerald-500 font-medium' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
+                <link.icon size={20} />{link.name}
               </Link>
             ))}
           </nav>
-
           <div className="mt-auto space-y-4">
-            {plan === 'free' && (
-              <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl">
-                <p className="text-xs text-emerald-400 font-semibold mb-2 uppercase tracking-wider">Assine Premium</p>
-                <p className="text-sm text-slate-300 mb-3">Relatórios completos e limite ilimitado.</p>
-                <Link to="/relatorios" className="block text-center text-xs font-bold py-2 bg-emerald-500 text-slate-900 rounded-lg hover:bg-emerald-400 transition-colors">
-                  CONHECER PLANOS
-                </Link>
-              </div>
-            )}
-            <button 
-              onClick={handleLogout}
-              className="flex items-center gap-3 px-4 py-3 w-full rounded-xl text-slate-400 hover:bg-red-500/10 hover:text-red-400 transition-all duration-200"
-            >
-              <LogOut size={20} />
-              Sair da conta
+            <button onClick={handleLogout} className="flex items-center gap-3 px-4 py-3 w-full rounded-xl text-slate-400 hover:bg-red-500/10 hover:text-red-400 transition-all">
+              <LogOut size={20} />Sair
             </button>
           </div>
         </div>
@@ -207,32 +177,19 @@ const Sidebar: React.FC<{ handleLogout: () => void, plan: string }> = ({ handleL
   );
 };
 
-const Header: React.FC<{ user: User }> = ({ user }) => {
-  return (
-    <header className="sticky top-0 z-30 flex items-center justify-between p-4 md:px-8 md:py-6 bg-financial-dark/80 backdrop-blur-md">
-      <div className="hidden md:block">
-        <h2 className="text-lg font-semibold">Olá, {user.nome} 👋</h2>
-        <p className="text-sm text-slate-400">Aqui está seu resumo financeiro.</p>
+const Header: React.FC<{ user: User }> = ({ user }) => (
+  <header className="sticky top-0 z-30 flex items-center justify-between p-4 md:px-8 md:py-6 bg-slate-950/50 backdrop-blur-md">
+    <div className="hidden md:block">
+      <h2 className="text-lg font-semibold text-slate-200">Olá, {user.nome} 👋</h2>
+    </div>
+    <div className="flex items-center gap-4 ml-auto">
+      <div className="text-right">
+        <p className="text-sm font-medium leading-none mb-1">{user.nome}</p>
+        <span className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded ${user.plano === 'premium' ? 'bg-amber-500/20 text-amber-500' : 'bg-slate-700 text-slate-400'}`}>{user.plano}</span>
       </div>
-      <div className="flex items-center gap-4 ml-auto">
-        <button className="p-2 text-slate-400 hover:text-white bg-slate-800 rounded-full relative">
-          <Bell size={20} />
-          <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full border border-financial-dark"></span>
-        </button>
-        <div className="flex items-center gap-3 pl-4 border-l border-slate-800">
-          <div className="text-right">
-            <p className="text-sm font-medium leading-none mb-1">{user.nome}</p>
-            <span className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded ${user.plano === 'premium' ? 'bg-amber-500/20 text-amber-500' : 'bg-slate-700 text-slate-400'}`}>
-              {user.plano}
-            </span>
-          </div>
-          <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center font-bold text-slate-300">
-            {user.nome.charAt(0)}
-          </div>
-        </div>
-      </div>
-    </header>
-  );
-};
+      <div className="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center font-bold text-slate-300 border border-slate-700">{user.nome.charAt(0)}</div>
+    </div>
+  </header>
+);
 
 export default App;
